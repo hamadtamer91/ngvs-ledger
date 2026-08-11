@@ -43,8 +43,9 @@ Your project ref and other IDs are on the project's **Settings → General** pag
 ## 5. Configure the app
 
 1. Copy `.env.example` to `.env`.
-2. Fill in `VITE_SUPABASE_URL` and `VITE_SUPABASE_ANON_KEY` — both found under
-   **Settings → API** in your Supabase project. The anon key is safe to use
+2. Fill in `VITE_SUPABASE_URL` and `VITE_SUPABASE_PUBLISHABLE_KEY` — both found
+   in the project's **Connect** dialog or **Settings → API Keys**. The
+   publishable key is safe to use
    in the browser; Row-Level Security is what actually protects your data.
 
 ## 6. Run it locally
