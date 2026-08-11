@@ -157,13 +157,16 @@ create policy "expenses_delete" on expenses for delete using (is_admin());
 -- After that, all further accounts must be created by an Admin via the
 -- create-user Edge Function — self-signup is disabled in the app itself.
 -- ----------------------------------------------------------------------------
-create or replace function handle_new_user() returns trigger
-language plpgsql security definer as $$
+create or replace function public.handle_new_user() returns trigger
+language plpgsql
+security definer
+set search_path = public
+as $$
 declare
   is_first boolean;
 begin
-  select count(*) = 0 into is_first from profiles;
-  insert into profiles (id, name, role, active)
+  select count(*) = 0 into is_first from public.profiles;
+  insert into public.profiles (id, name, role, active)
   values (
     new.id,
     coalesce(new.raw_user_meta_data->>'name', split_part(new.email,'@',1)),
@@ -177,4 +180,4 @@ $$;
 drop trigger if exists on_auth_user_created on auth.users;
 create trigger on_auth_user_created
   after insert on auth.users
-  for each row execute function handle_new_user();
+  for each row execute function public.handle_new_user();

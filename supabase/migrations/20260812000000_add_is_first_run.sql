@@ -3,6 +3,7 @@ create or replace function public.is_first_run() returns boolean
 language sql
 security definer
 stable
+set search_path = public
 as $$
   select not exists (select 1 from public.profiles)
 $$;
