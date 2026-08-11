@@ -13,7 +13,7 @@ one shared database for your whole team.
 ## 2. Set up the database
 
 1. In your project, open **SQL Editor → New query**.
-2. Paste the entire contents of `supabase/schema.sql` and click **Run**.
+2. Paste the entire contents of `schema.sql` and click **Run**.
    This creates every table, the balance-safe fund tracking, and all
    Row-Level Security rules (who can see/add/edit/delete what).
 

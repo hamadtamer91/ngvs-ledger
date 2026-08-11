@@ -39,7 +39,7 @@ const emptyForm = (dept) => ({
 });
 
 async function callFn(action, payload, accessToken) {
-  const res = await fetch(`${functionsUrl}/dynamic-function`, {
+  const res = await fetch(`${functionsUrl}/create-user`, {
     method: "POST",
     headers: { "Content-Type": "application/json", Authorization: `Bearer ${accessToken}` },
     body: JSON.stringify({ action, ...payload }),
@@ -131,6 +131,7 @@ export default function App() {
 
   /* ---- auth session ---- */
   useEffect(() => {
+    if (!supabase) return;
     supabase.auth.getSession().then(({ data }) => setSession(data.session ?? null));
     const { data: sub } = supabase.auth.onAuthStateChange((_evt, s) => setSession(s));
     return () => sub.subscription.unsubscribe();
@@ -138,7 +139,7 @@ export default function App() {
 
   /* ---- load my profile once signed in ---- */
   useEffect(() => {
-    if (!session) { setProfile(null); return; }
+    if (!supabase || !session) { setProfile(null); return; }
     (async () => {
       const { data, error } = await supabase.from("profiles").select("*").eq("id", session.user.id).single();
       if (error || !data || !data.active) {
@@ -152,6 +153,7 @@ export default function App() {
 
   /* ---- load shared data once we have an active profile ---- */
   const loadAll = useCallback(async () => {
+    if (!supabase) return;
     setLoadingData(true);
     const [p, d, fl, ft, ex] = await Promise.all([
       supabase.from("profiles").select("*").order("created_at"),
@@ -407,6 +409,9 @@ export default function App() {
   };
 
   /* ------------------------------- render gates -------------------------------- */
+  if (!supabase) {
+    return <ConfigurationScreen />;
+  }
   if (session === undefined) {
     return <div className="h-full min-h-[500px] flex items-center justify-center" style={{ background: PAPER, fontFamily: "ui-serif, Georgia, serif", color: INK }}><div className="text-sm tracking-widest uppercase">Opening the ledger…</div></div>;
   }
@@ -469,6 +474,20 @@ export default function App() {
 }
 
 /* --------------------------------- login -------------------------------- */
+function ConfigurationScreen() {
+  return (
+    <div className="h-full min-h-[500px] flex items-center justify-center p-6" style={{ background: PAPER }}>
+      <div className="w-full max-w-lg border rounded-sm p-6 bg-white shadow-sm" style={{ borderColor: LINE }}>
+        <div className="text-xs tracking-[0.2em] uppercase mb-1" style={{ color: BRASS }}>NGVS · Company Ledger</div>
+        <h1 className="text-xl mb-3" style={{ fontFamily: "ui-serif, Georgia, serif", color: INK }}>Supabase configuration required</h1>
+        <p className="text-sm leading-relaxed" style={{ color: SLATE }}>
+          Add <code>VITE_SUPABASE_URL</code> and <code>VITE_SUPABASE_ANON_KEY</code> to the project’s <code>.env</code> file, then restart the dev server.
+        </p>
+      </div>
+    </div>
+  );
+}
+
 function LoginScreen({ showToast }) {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");

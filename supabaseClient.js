@@ -8,7 +8,7 @@ if (!url || !anonKey) {
   console.error("Missing VITE_SUPABASE_URL / VITE_SUPABASE_ANON_KEY — check your .env file.");
 }
 
-export const supabase = createClient(url, anonKey);
+export const supabase = url && anonKey ? createClient(url, anonKey) : null;
 
-// Base URL for calling the create-user Edge Function
-export const functionsUrl = `${url.replace(".supabase.co", ".functions.supabase.co")}`;
+// Base URL for calling Supabase Edge Functions.
+export const functionsUrl = url ? `${url.replace(/\/$/, "")}/functions/v1` : "";
