@@ -32,6 +32,14 @@ language sql security definer stable as $$
   select coalesce((select role in ('Admin','Accountant') and active from profiles where id = auth.uid()), false)
 $$;
 
+-- Lets the signed-out app check whether any account exists yet, so it can
+-- show the one-time "Create Admin Account" screen instead of Login.
+create or replace function is_first_run() returns boolean
+language sql security definer stable as $$
+  select not exists(select 1 from profiles)
+$$;
+grant execute on function is_first_run() to anon, authenticated;
+
 -- ----------------------------------------------------------------------------
 -- DEPARTMENTS
 -- ----------------------------------------------------------------------------

@@ -5,7 +5,7 @@ const publicKey = import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY || import.meta.e
 
 if (!url || !publicKey) {
   // eslint-disable-next-line no-console
-  console.error("Missing VITE_SUPABASE_URL / VITE_SUPABASE_ANON_KEY — check your .env file.");
+  console.error("Missing VITE_SUPABASE_URL / VITE_SUPABASE_PUBLISHABLE_KEY — check your .env file.");
 }
 
 export const supabase = url && publicKey ? createClient(url, publicKey) : null;
