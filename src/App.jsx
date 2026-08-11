@@ -53,20 +53,25 @@ const emptyForm = (dept) => ({
 });
 
 async function callFn(action, payload, accessToken) {
-  const res = await fetch(`${functionsUrl}/create-user`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json", ...(accessToken ? { Authorization: `Bearer ${accessToken}` } : {}) },
-    body: JSON.stringify({ action, ...payload }),
-  });
-  const raw = await res.text();
-  let data = {};
-  try { data = raw ? JSON.parse(raw) : {}; } catch { data = { error: raw }; }
-  if (!res.ok) {
+  const functionNames = [...new Set([import.meta.env.VITE_SUPABASE_FUNCTION_NAME || "create-user", "dynamic-function"])];
+  let lastError = null;
+  for (const functionName of functionNames) {
+    const res = await fetch(`${functionsUrl}/${functionName}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", ...(accessToken ? { Authorization: `Bearer ${accessToken}` } : {}) },
+      body: JSON.stringify({ action, ...payload }),
+    });
+    const raw = await res.text();
+    let data = {};
+    try { data = raw ? JSON.parse(raw) : {}; } catch { data = { error: raw }; }
+    if (res.ok) return data;
     const message = getErrorMessage(data.error, raw || `Request failed (${res.status})`);
-    if (res.status === 404) throw new Error("The create-user Supabase Edge Function is not deployed.");
-    throw new Error(message);
+    if (res.status === 404 && functionName !== functionNames[functionNames.length - 1]) continue;
+    lastError = new Error(functionName === "dynamic-function" && action === "bootstrap"
+      ? "First-run Admin setup requires the create-user Edge Function. Deploy create-user in Supabase Edge Functions."
+      : message);
   }
-  return data;
+  throw lastError || new Error("Supabase function request failed");
 }
 
 /* --------------------------------- small UI bits ------------------------------ */
