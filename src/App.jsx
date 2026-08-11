@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo, useCallback } from "react";
+﻿import React, { useState, useEffect, useMemo, useCallback } from "react";
 import {
   ResponsiveContainer, LineChart, Line, BarChart, Bar, PieChart, Pie, Cell,
   XAxis, YAxis, CartesianGrid, Tooltip, Legend,
@@ -32,6 +32,20 @@ const fmtMoney = (n) => (Number(n) || 0).toLocaleString("en-US", { style: "curre
 const fmtMonth = (iso) => new Date(iso + "T00:00:00").toLocaleDateString("en-US", { month: "short", year: "2-digit" });
 const monthKey = (iso) => iso.slice(0, 7);
 
+function getErrorMessage(error, fallback = "Request failed") {
+  if (!error) return fallback;
+  if (typeof error === "string") return error;
+  const parts = [error.message, error.details, error.hint].filter((part) => typeof part === "string" && part.trim());
+  if (parts.length) return parts.join(" â€” ");
+  if (error.code) return `${fallback} (code ${error.code})`;
+  try {
+    const serialized = JSON.stringify(error);
+    return serialized && serialized !== "{}" ? serialized : fallback;
+  } catch {
+    return fallback;
+  }
+}
+
 const emptyForm = (dept) => ({
   id: null, type: "Operational", date: todayISO(), department: dept || "",
   payee: "", category: OP_CATEGORIES[0], amount: "", currency: "USD",
@@ -48,7 +62,7 @@ async function callFn(action, payload, accessToken) {
   let data = {};
   try { data = raw ? JSON.parse(raw) : {}; } catch { data = { error: raw }; }
   if (!res.ok) {
-    const message = typeof data.error === "string" ? data.error : data.error?.message || raw || `Request failed (${res.status})`;
+    const message = getErrorMessage(data.error, raw || `Request failed (${res.status})`);
     if (res.status === 404) throw new Error("The create-user Supabase Edge Function is not deployed.");
     throw new Error(message);
   }
@@ -59,10 +73,19 @@ async function callFn(action, payload, accessToken) {
 function Toast({ toast }) {
   if (!toast) return null;
   return (
-    <div className="fixed bottom-5 left-1/2 -translate-x-1/2 z-50 px-4 py-2.5 rounded-sm shadow-lg text-sm flex items-center gap-2 max-w-[90%] text-center"
+    <div role="status" aria-live="polite" className="fixed bottom-5 left-1/2 -translate-x-1/2 z-50 px-4 py-2.5 rounded-sm shadow-lg text-sm flex items-center gap-2 max-w-[90%] text-center"
       style={{ background: toast.type === "error" ? RUST : INK, color: PAPER }}>
       {toast.type === "error" ? <AlertCircle size={15} /> : <Check size={15} />}
       {toast.msg}
+    </div>
+  );
+}
+function ApiAlert({ message }) {
+  if (!message) return null;
+  return (
+    <div role="alert" aria-live="assertive" className="border rounded-sm px-3 py-2.5 text-xs leading-relaxed flex items-start gap-2" style={{ borderColor: RUST, background: "#FFF4F2", color: RUST }}>
+      <AlertCircle size={15} className="shrink-0 mt-0.5" />
+      <span>{message}</span>
     </div>
   );
 }
@@ -109,7 +132,7 @@ function Card({ title, children }) {
     </div>
   );
 }
-function Empty() { return <div className="text-xs py-8 text-center" style={{ color: SLATE }}>No records yet — add an entry or import a CSV.</div>; }
+function Empty() { return <div className="text-xs py-8 text-center" style={{ color: SLATE }}>No records yet â€” add an entry or import a CSV.</div>; }
 
 /* ==================================== APP ===================================== */
 export default function App() {
@@ -135,21 +158,39 @@ export default function App() {
   const [showChangePw, setShowChangePw] = useState(false);
   const [filters, setFilters] = useState({ from: "", to: "", type: "All", department: "All", category: "All", status: "All", fund: "All", search: "" });
 
-  const showToast = useCallback((msg, type = "ok") => { setToast({ msg, type }); setTimeout(() => setToast(null), 2800); }, []);
+  const [dataError, setDataError] = useState(null);
+  const [setupError, setSetupError] = useState(null);
+  const showToast = useCallback((msg, type = "ok") => { setToast({ msg: getErrorMessage(msg), type }); setTimeout(() => setToast(null), 6000); }, []);
 
   /* ---- auth session ---- */
   useEffect(() => {
-    supabase.auth.getSession().then(({ data }) => setSession(data.session ?? null));
+    supabase.auth.getSession().then(({ data, error }) => {
+      if (error) {
+        showToast(getErrorMessage(error, "Could not connect to Supabase"), "error");
+        setSession(null);
+        return;
+      }
+      setSession(data.session ?? null);
+    }).catch((error) => {
+      showToast(getErrorMessage(error, "Could not connect to Supabase"), "error");
+      setSession(null);
+    });
     const { data: sub } = supabase.auth.onAuthStateChange((_evt, s) => setSession(s));
     return () => sub.subscription.unsubscribe();
-  }, []);
+  }, [showToast]);
 
   /* ---- check whether this is a brand-new install (no accounts yet) ---- */
   useEffect(() => {
     if (session) return; // only relevant while signed out
     (async () => {
       const { data, error } = await supabase.rpc("is_first_run");
-      setFirstRun(error ? false : !!data);
+      if (error) {
+        setSetupError(getErrorMessage(error, "Could not check setup status"));
+        setFirstRun(false);
+        return;
+      }
+      setSetupError(null);
+      setFirstRun(!!data);
     })();
   }, [session]);
 
@@ -159,7 +200,7 @@ export default function App() {
     (async () => {
       const { data, error } = await supabase.from("profiles").select("*").eq("id", session.user.id).single();
       if (error || !data || !data.active) {
-        showToast(error ? "Could not load your profile" : "Your account is inactive — contact an Admin", "error");
+        showToast(error ? getErrorMessage(error, "Could not load your profile") : "Your account is inactive â€” contact an Admin", "error");
         await supabase.auth.signOut();
         return;
       }
@@ -170,6 +211,7 @@ export default function App() {
   /* ---- load shared data once we have an active profile ---- */
   const loadAll = useCallback(async () => {
     setLoadingData(true);
+    setDataError(null);
     const [p, d, fl, ft, ex] = await Promise.all([
       supabase.from("profiles").select("*").order("created_at"),
       supabase.from("departments").select("*").order("name"),
@@ -177,6 +219,12 @@ export default function App() {
       supabase.from("fund_transactions").select("*").order("date", { ascending: false }),
       supabase.from("expenses").select("*").order("date", { ascending: false }),
     ]);
+    const failed = [p, d, fl, ft, ex].find((result) => result.error);
+    if (failed) {
+      setDataError(getErrorMessage(failed.error, "Could not load ledger data"));
+      setLoadingData(false);
+      return;
+    }
     if (p.data) setProfiles(p.data);
     if (d.data) setDepartments(d.data.map((r) => r.name));
     if (fl.data) setFundLocations(fl.data.map((f) => ({ id: f.id, name: f.name, type: f.type, openingBalance: f.opening_balance })));
@@ -211,36 +259,36 @@ export default function App() {
     const trimmed = name.trim();
     if (!trimmed) return;
     const { error } = await supabase.from("departments").insert({ name: trimmed, created_by: profile.id });
-    if (error) { showToast(error.message.includes("duplicate") ? "That department already exists" : error.message, "error"); return; }
+    if (error) { const message = getErrorMessage(error); showToast(message.toLowerCase().includes("duplicate") ? "That department already exists" : message, "error"); return; }
     showToast(`Department "${trimmed}" added`);
     loadAll();
   };
   const removeDepartment = async (name) => {
     if (departments.length <= 1) { showToast("Keep at least one department", "error"); return; }
-    if (expenses.some((e) => e.department === name)) { showToast("Can't remove — expenses are recorded under this department", "error"); return; }
+    if (expenses.some((e) => e.department === name)) { showToast("Can't remove â€” expenses are recorded under this department", "error"); return; }
     const { error } = await supabase.from("departments").delete().eq("name", name);
-    if (error) { showToast(error.message, "error"); return; }
+    if (error) { showToast(getErrorMessage(error), "error"); return; }
     showToast(`Department "${name}" removed`);
     loadAll();
   };
 
   const createFundLocation = async (loc) => {
     const { error } = await supabase.from("fund_locations").insert({ name: loc.name, type: loc.type, opening_balance: loc.openingBalance, created_by: profile.id });
-    if (error) { showToast(error.message, "error"); return; }
+    if (error) { showToast(getErrorMessage(error), "error"); return; }
     showToast(`Account "${loc.name}" created`);
     setShowFundModal(null);
     loadAll();
   };
   const deleteFundLocation = async (id) => {
-    if (expenses.some((e) => e.fundLocationId === id)) { showToast("Can't remove — expenses are recorded against this account", "error"); return; }
+    if (expenses.some((e) => e.fundLocationId === id)) { showToast("Can't remove â€” expenses are recorded against this account", "error"); return; }
     const { error } = await supabase.from("fund_locations").delete().eq("id", id);
-    if (error) { showToast(error.message, "error"); return; }
+    if (error) { showToast(getErrorMessage(error), "error"); return; }
     showToast("Account removed");
     loadAll();
   };
   const recordDeposit = async ({ locationId, amount, date, notes }) => {
     const { error } = await supabase.from("fund_transactions").insert({ location_id: locationId, amount, type: "Deposit", date, notes, added_by: profile.id });
-    if (error) { showToast(error.message, "error"); return; }
+    if (error) { showToast(getErrorMessage(error), "error"); return; }
     showToast("Funds added");
     setShowFundModal(null); setDepositFor(null);
     loadAll();
@@ -253,7 +301,7 @@ export default function App() {
       { location_id: fromId, amount: -Math.abs(amount), type: "Transfer", transfer_id: transferId, counterparty_name: toLoc?.name, date, notes, added_by: profile.id },
       { location_id: toId, amount: Math.abs(amount), type: "Transfer", transfer_id: transferId, counterparty_name: fromLoc?.name, date, notes, added_by: profile.id },
     ]);
-    if (error) { showToast(error.message, "error"); return; }
+    if (error) { showToast(getErrorMessage(error), "error"); return; }
     showToast(`Transferred ${fmtMoney(amount)} from ${fromLoc?.name} to ${toLoc?.name}`);
     setShowFundModal(null);
     loadAll();
@@ -277,14 +325,14 @@ export default function App() {
     } else {
       ({ error } = await supabase.from("expenses").insert({ ...row, added_by: profile.id }));
     }
-    if (error) { showToast(error.message, "error"); return; }
+    if (error) { showToast(getErrorMessage(error), "error"); return; }
     setShowForm(false);
     showToast(form.id ? "Entry updated" : "Entry recorded");
     loadAll();
   };
   const deleteEntry = async (id) => {
     const { error } = await supabase.from("expenses").delete().eq("id", id);
-    if (error) { showToast(error.message, "error"); return; }
+    if (error) { showToast(getErrorMessage(error), "error"); return; }
     showToast("Entry deleted");
     loadAll();
   };
@@ -314,7 +362,7 @@ export default function App() {
         }).filter((r) => r.amount > 0);
         if (rows.length === 0) { showToast("No valid rows found in file", "error"); return; }
         const { error } = await supabase.from("expenses").insert(rows);
-        if (error) { showToast(error.message, "error"); return; }
+        if (error) { showToast(getErrorMessage(error), "error"); return; }
         showToast(`Imported ${rows.length} entries`);
         setShowImport(false);
         loadAll();
@@ -329,20 +377,20 @@ export default function App() {
       await callFn("create", { email, password, name, role }, session.access_token);
       showToast(`Account created for ${name}`);
       loadAll();
-    } catch (e) { showToast(e.message, "error"); }
+    } catch (e) { showToast(getErrorMessage(e), "error"); }
   };
   const resetUserPassword = async (userId, newPassword) => {
     try {
       await callFn("reset_password", { userId, newPassword }, session.access_token);
       showToast("Password reset");
-    } catch (e) { showToast(e.message, "error"); }
+    } catch (e) { showToast(getErrorMessage(e), "error"); }
   };
   const changeRole = async (id, role) => {
     const activeAdmins = profiles.filter((p) => p.role === "Admin" && p.active).length;
     const target = profiles.find((p) => p.id === id);
     if (target.role === "Admin" && role !== "Admin" && activeAdmins <= 1) { showToast("At least one active Admin is required", "error"); return; }
     const { error } = await supabase.from("profiles").update({ role }).eq("id", id);
-    if (error) { showToast(error.message, "error"); return; }
+    if (error) { showToast(getErrorMessage(error), "error"); return; }
     loadAll();
   };
   const toggleActive = async (id) => {
@@ -351,7 +399,7 @@ export default function App() {
     if (target.id === profile.id) { showToast("You can't deactivate your own account", "error"); return; }
     if (target.role === "Admin" && target.active && activeAdmins <= 1) { showToast("At least one active Admin is required", "error"); return; }
     const { error } = await supabase.from("profiles").update({ active: !target.active }).eq("id", id);
-    if (error) { showToast(error.message, "error"); return; }
+    if (error) { showToast(getErrorMessage(error), "error"); return; }
     showToast(target.active ? "Account deactivated" : "Account reactivated");
     loadAll();
   };
@@ -425,18 +473,21 @@ export default function App() {
 
   /* ------------------------------- render gates -------------------------------- */
   if (session === undefined) {
-    return <div className="h-full min-h-[500px] flex items-center justify-center" style={{ background: PAPER, fontFamily: "ui-serif, Georgia, serif", color: INK }}><div className="text-sm tracking-widest uppercase">Opening the ledger…</div></div>;
+    return <div className="h-full min-h-[500px] flex items-center justify-center" style={{ background: PAPER, fontFamily: "ui-serif, Georgia, serif", color: INK }}><div className="text-sm tracking-widest uppercase">Opening the ledgerâ€¦</div></div>;
   }
   if (!session) {
-    if (firstRun === undefined) return <div className="h-full min-h-[500px] flex items-center justify-center" style={{ background: PAPER, color: INK }}><div className="text-sm">Checking setup status…</div></div>;
-    if (firstRun) return <SetupAdmin showToast={showToast} onDone={async (email, password) => { const { error } = await supabase.auth.signInWithPassword({ email, password }); if (error) showToast(error.message, "error"); }} />;
-    return <LoginScreen showToast={showToast} />;
+    if (firstRun === undefined) return <div className="h-full min-h-[500px] flex items-center justify-center" style={{ background: PAPER, color: INK }}><div className="text-sm">Checking setup statusâ€¦</div></div>;
+    if (firstRun) return <SetupAdmin error={setupError} showToast={showToast} onDone={async (email, password) => { const { error } = await supabase.auth.signInWithPassword({ email, password }); if (error) showToast(getErrorMessage(error), "error"); }} />;
+    return <LoginScreen error={setupError} showToast={showToast} />;
   }
   if (!profile) {
-    return <div className="h-full min-h-[500px] flex items-center justify-center" style={{ background: PAPER, color: INK }}><div className="text-sm">Loading your account…</div></div>;
+    return <div className="h-full min-h-[500px] flex items-center justify-center" style={{ background: PAPER, color: INK }}><div className="text-sm">Loading your accountâ€¦</div></div>;
+  }
+  if (dataError) {
+    return <div className="h-full min-h-[500px] flex items-center justify-center p-6" style={{ background: PAPER, color: INK }}><div className="w-full max-w-lg space-y-3"><div className="text-sm" style={{ fontFamily: "ui-serif, Georgia, serif" }}>Could not load ledger data</div><ApiAlert message={dataError} /><button onClick={loadAll} className="px-3 py-2 rounded-sm text-xs font-semibold" style={{ background: INK, color: PAPER }}>Retry</button></div></div>;
   }
   if (loadingData) {
-    return <div className="h-full min-h-[500px] flex items-center justify-center" style={{ background: PAPER, color: INK }}><div className="text-sm">Loading records…</div></div>;
+    return <div className="h-full min-h-[500px] flex items-center justify-center" style={{ background: PAPER, color: INK }}><div className="text-sm">Loading recordsâ€¦</div></div>;
   }
 
   return (
@@ -445,11 +496,11 @@ export default function App() {
       <div className="border-b sticky top-0 z-30" style={{ borderColor: LINE, background: "rgba(247,245,239,0.92)", backdropFilter: "blur(4px)" }}>
         <div className="px-4 pt-4 pb-3 flex items-start justify-between gap-3">
           <div>
-            <div className="text-[10px] tracking-[0.25em] uppercase" style={{ color: BRASS }}>NGVS · Company Ledger</div>
+            <div className="text-[10px] tracking-[0.25em] uppercase" style={{ color: BRASS }}>NGVS Â· Company Ledger</div>
             <h1 className="text-lg leading-tight" style={{ fontFamily: "ui-serif, Georgia, serif" }}>Expense &amp; Payroll Register</h1>
           </div>
           <div className="flex flex-col items-end gap-1 shrink-0">
-            <div className="text-[11px] px-2.5 py-1 rounded-sm border" style={{ borderColor: LINE, color: SLATE }}>{profile.name} · {profile.role}</div>
+            <div className="text-[11px] px-2.5 py-1 rounded-sm border" style={{ borderColor: LINE, color: SLATE }}>{profile.name} Â· {profile.role}</div>
             <div className="flex gap-2">
               <button onClick={() => setShowChangePw(true)} className="text-[10px] flex items-center gap-1" style={{ color: SLATE }}><KeyRound size={11} /> Password</button>
               <button onClick={() => supabase.auth.signOut()} className="text-[10px] flex items-center gap-1" style={{ color: SLATE }}><LogOut size={11} /> Log out</button>
@@ -495,18 +546,18 @@ export default function App() {
 }
 
 /* --------------------------------- first-run setup -------------------------------- */
-function SetupAdmin({ showToast, onDone }) {
+function SetupAdmin({ error, showToast, onDone }) {
   const [name, setName] = useState(""); const [email, setEmail] = useState(""); const [password, setPassword] = useState(""); const [confirm, setConfirm] = useState(""); const [busy, setBusy] = useState(false);
 
   const submit = async () => {
-    if (!name.trim() || !email.trim() || password.length < 6) { showToast("Fill all fields — password needs 6+ characters", "error"); return; }
+    if (!name.trim() || !email.trim() || password.length < 6) { showToast("Fill all fields â€” password needs 6+ characters", "error"); return; }
     if (password !== confirm) { showToast("Passwords don't match", "error"); return; }
     setBusy(true);
     try {
       await callFn("bootstrap", { name: name.trim(), email: email.trim(), password });
       await onDone(email.trim(), password);
     } catch (e) {
-      showToast(e.message, "error");
+      showToast(getErrorMessage(e), "error");
     }
     setBusy(false);
   };
@@ -514,16 +565,17 @@ function SetupAdmin({ showToast, onDone }) {
   return (
     <div className="h-full min-h-[500px] flex items-center justify-center p-6" style={{ background: PAPER, backgroundImage: `repeating-linear-gradient(180deg, transparent, transparent 27px, ${LINE} 28px)` }}>
       <div className="w-full max-w-sm border rounded-sm p-6 bg-white shadow-sm" style={{ borderColor: LINE }}>
-        <div className="text-xs tracking-[0.2em] uppercase mb-1" style={{ color: BRASS }}>NGVS · Company Ledger · First-time setup</div>
+        <div className="text-xs tracking-[0.2em] uppercase mb-1" style={{ color: BRASS }}>NGVS Â· Company Ledger Â· First-time setup</div>
         <h1 className="text-xl mb-4" style={{ fontFamily: "ui-serif, Georgia, serif", color: INK }}>Create the Admin account</h1>
+        <ApiAlert message={error} />
         <div className="space-y-2.5">
           <input placeholder="Full name" value={name} onChange={(e) => setName(e.target.value)} className="w-full border rounded-sm px-3 py-2 text-sm" style={{ borderColor: LINE }} />
           <input placeholder="Email" value={email} onChange={(e) => setEmail(e.target.value)} className="w-full border rounded-sm px-3 py-2 text-sm" style={{ borderColor: LINE }} />
           <input type="password" placeholder="Password (6+ characters)" value={password} onChange={(e) => setPassword(e.target.value)} className="w-full border rounded-sm px-3 py-2 text-sm" style={{ borderColor: LINE }} />
           <input type="password" placeholder="Confirm password" value={confirm} onChange={(e) => setConfirm(e.target.value)} className="w-full border rounded-sm px-3 py-2 text-sm" style={{ borderColor: LINE }} />
-          <button disabled={busy} onClick={submit} className="w-full py-2 rounded-sm text-sm font-semibold tracking-wide" style={{ background: INK, color: PAPER }}>{busy ? "Creating…" : "Create Admin & Enter"}</button>
+          <button disabled={busy} onClick={submit} className="w-full py-2 rounded-sm text-sm font-semibold tracking-wide" style={{ background: INK, color: PAPER }}>{busy ? "Creatingâ€¦" : "Create Admin & Enter"}</button>
           <p className="text-[11px] leading-relaxed pt-1" style={{ color: SLATE }}>
-            This runs once. You'll be the Admin — every other login for your team gets created from inside the app, under Team, once you're in.
+            This runs once. You'll be the Admin â€” every other login for your team gets created from inside the app, under Team, once you're in.
           </p>
         </div>
       </div>
@@ -540,7 +592,7 @@ function ChangePasswordModal({ onClose, showToast }) {
     setBusy(true);
     const { error } = await supabase.auth.updateUser({ password });
     setBusy(false);
-    if (error) { showToast(error.message, "error"); return; }
+    if (error) { showToast(getErrorMessage(error), "error"); return; }
     showToast("Password updated");
     onClose();
   };
@@ -551,7 +603,7 @@ function ChangePasswordModal({ onClose, showToast }) {
         <div className="space-y-2.5">
           <Field label="New password"><input type="password" value={password} onChange={(e) => setPassword(e.target.value)} className="w-full border rounded-sm px-3 py-2 text-sm" style={{ borderColor: LINE }} /></Field>
           <Field label="Confirm new password"><input type="password" value={confirm} onChange={(e) => setConfirm(e.target.value)} className="w-full border rounded-sm px-3 py-2 text-sm" style={{ borderColor: LINE }} /></Field>
-          <button disabled={busy} onClick={submit} className="w-full py-2 rounded-sm text-sm font-semibold" style={{ background: INK, color: PAPER }}>{busy ? "Updating…" : "Update Password"}</button>
+          <button disabled={busy} onClick={submit} className="w-full py-2 rounded-sm text-sm font-semibold" style={{ background: INK, color: PAPER }}>{busy ? "Updatingâ€¦" : "Update Password"}</button>
         </div>
       </div>
     </div>
@@ -559,28 +611,35 @@ function ChangePasswordModal({ onClose, showToast }) {
 }
 
 /* --------------------------------- login -------------------------------- */
-function LoginScreen({ showToast }) {
+function LoginScreen({ error: setupError, showToast }) {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [busy, setBusy] = useState(false);
+  const [error, setError] = useState(null);
 
   const submit = async () => {
     if (!email.trim() || !password) { showToast("Enter your email and password", "error"); return; }
+    setError(null);
     setBusy(true);
-    const { error } = await supabase.auth.signInWithPassword({ email: email.trim(), password });
+    const { error: signInError } = await supabase.auth.signInWithPassword({ email: email.trim(), password });
     setBusy(false);
-    if (error) showToast(error.message, "error");
+    if (signInError) {
+      const message = getErrorMessage(signInError, "Sign in failed");
+      setError(message);
+      showToast(message, "error");
+    }
   };
 
   return (
     <div className="h-full min-h-[500px] flex items-center justify-center p-6" style={{ background: PAPER, backgroundImage: `repeating-linear-gradient(180deg, transparent, transparent 27px, ${LINE} 28px)` }}>
       <div className="w-full max-w-sm border rounded-sm p-6 bg-white shadow-sm" style={{ borderColor: LINE }}>
-        <div className="text-xs tracking-[0.2em] uppercase mb-1" style={{ color: BRASS }}>NGVS · Company Ledger</div>
+        <div className="text-xs tracking-[0.2em] uppercase mb-1" style={{ color: BRASS }}>NGVS Â· Company Ledger</div>
         <h1 className="text-xl mb-4" style={{ fontFamily: "ui-serif, Georgia, serif", color: INK }}>Sign in</h1>
+        <div className="space-y-2.5 mb-2.5"><ApiAlert message={error || setupError} /></div>
         <div className="space-y-2.5">
           <input placeholder="Email" value={email} onChange={(e) => setEmail(e.target.value)} onKeyDown={(e) => e.key === "Enter" && submit()} className="w-full border rounded-sm px-3 py-2 text-sm" style={{ borderColor: LINE }} />
           <input type="password" placeholder="Password" value={password} onChange={(e) => setPassword(e.target.value)} onKeyDown={(e) => e.key === "Enter" && submit()} className="w-full border rounded-sm px-3 py-2 text-sm" style={{ borderColor: LINE }} />
-          <button disabled={busy} onClick={submit} className="w-full py-2 rounded-sm text-sm font-semibold tracking-wide" style={{ background: INK, color: PAPER }}>{busy ? "Checking…" : "Sign In"}</button>
+          <button disabled={busy} onClick={submit} className="w-full py-2 rounded-sm text-sm font-semibold tracking-wide" style={{ background: INK, color: PAPER }}>{busy ? "Checkingâ€¦" : "Sign In"}</button>
           <p className="text-[11px] leading-relaxed pt-1" style={{ color: SLATE }}>No account? Ask your Admin to create one for you under Team.</p>
         </div>
       </div>
@@ -595,7 +654,7 @@ function TeamAdmin({ profiles, currentUser, createUser, resetUserPassword, chang
   const [resetFor, setResetFor] = useState(null); const [resetPw, setResetPw] = useState("");
 
   const submitNew = async () => {
-    if (!name.trim() || !email.trim() || password.length < 6) { showToast("Fill all fields — password needs 6+ characters", "error"); return; }
+    if (!name.trim() || !email.trim() || password.length < 6) { showToast("Fill all fields â€” password needs 6+ characters", "error"); return; }
     await createUser({ email: email.trim(), password, name: name.trim(), role });
     setName(""); setEmail(""); setPassword(""); setRole("Accountant"); setShowNew(false);
   };
@@ -642,7 +701,7 @@ function TeamAdmin({ profiles, currentUser, createUser, resetUserPassword, chang
           </div>
         ))}
       </div>
-      <p className="text-[11px] leading-relaxed pt-1" style={{ color: SLATE }}>Accounts are created and authenticated through Supabase — real hashed passwords, server-side enforced permissions.</p>
+      <p className="text-[11px] leading-relaxed pt-1" style={{ color: SLATE }}>Accounts are created and authenticated through Supabase â€” real hashed passwords, server-side enforced permissions.</p>
     </div>
   );
 }
@@ -724,9 +783,9 @@ function FundsTab({ fundLocations, balances, totalBalance, fundTransactions, can
                 <div key={t.id} className="flex justify-between items-center px-3 py-2 text-xs">
                   <div>
                     <div className="font-medium flex items-center gap-1.5">{isTransfer && <ArrowLeftRight size={11} color={SLATE} />}{loc?.name || "Unknown account"}</div>
-                    <div className="text-[10px]" style={{ color: SLATE }}>{label} · {t.date} · by {nameFor(t.addedByUsername)}{t.notes ? ` · ${t.notes}` : ""}</div>
+                    <div className="text-[10px]" style={{ color: SLATE }}>{label} Â· {t.date} Â· by {nameFor(t.addedByUsername)}{t.notes ? ` Â· ${t.notes}` : ""}</div>
                   </div>
-                  <div className="font-semibold" style={{ fontFamily: "ui-monospace, monospace", color: t.amount < 0 ? RUST : FOREST }}>{t.amount < 0 ? "−" : "+"}{fmtMoney(Math.abs(t.amount))}</div>
+                  <div className="font-semibold" style={{ fontFamily: "ui-monospace, monospace", color: t.amount < 0 ? RUST : FOREST }}>{t.amount < 0 ? "âˆ’" : "+"}{fmtMoney(Math.abs(t.amount))}</div>
                 </div>
               );
             })}
@@ -745,7 +804,7 @@ function FundLocationModal({ onClose, onSubmit }) {
       <div className="w-full max-w-sm bg-white rounded-sm p-4" style={{ borderColor: LINE }}>
         <div className="flex items-center justify-between mb-3"><h2 className="text-base font-semibold" style={{ fontFamily: "ui-serif, Georgia, serif" }}>New Fund Account</h2><button onClick={onClose}><X size={18} color={SLATE} /></button></div>
         <div className="space-y-2.5">
-          <Field label="Account name"><input value={name} onChange={(e) => setName(e.target.value)} placeholder="e.g. Bank of Beirut – Operating" className="w-full border rounded-sm px-3 py-2 text-sm" style={{ borderColor: LINE }} /></Field>
+          <Field label="Account name"><input value={name} onChange={(e) => setName(e.target.value)} placeholder="e.g. Bank of Beirut â€“ Operating" className="w-full border rounded-sm px-3 py-2 text-sm" style={{ borderColor: LINE }} /></Field>
           <Field label="Type"><select value={type} onChange={(e) => setType(e.target.value)} className="w-full border rounded-sm px-3 py-2 text-sm bg-white" style={{ borderColor: LINE }}>{FUND_TYPES.map((t) => <option key={t}>{t}</option>)}</select></Field>
           <Field label="Opening balance"><input type="number" value={opening} onChange={(e) => setOpening(e.target.value)} className="w-full border rounded-sm px-3 py-2 text-sm" style={{ borderColor: LINE, fontFamily: "ui-monospace, monospace" }} /></Field>
           <button onClick={submit} className="w-full py-2 rounded-sm text-sm font-semibold" style={{ background: INK, color: PAPER }}>Create Account</button>
@@ -787,9 +846,9 @@ function TransferModal({ fundLocations, balances, onClose, onSubmit }) {
       <div className="w-full max-w-sm bg-white rounded-sm p-4" style={{ borderColor: LINE }}>
         <div className="flex items-center justify-between mb-3"><h2 className="text-base font-semibold" style={{ fontFamily: "ui-serif, Georgia, serif" }}>Transfer Funds</h2><button onClick={onClose}><X size={18} color={SLATE} /></button></div>
         <div className="space-y-2.5">
-          <Field label="From account"><select value={fromId} onChange={(e) => setFromId(e.target.value)} className="w-full border rounded-sm px-3 py-2 text-sm bg-white" style={{ borderColor: LINE }}>{fundLocations.map((f) => <option key={f.id} value={f.id}>{f.name} — {fmtMoney(balances[f.id] || 0)}</option>)}</select></Field>
+          <Field label="From account"><select value={fromId} onChange={(e) => setFromId(e.target.value)} className="w-full border rounded-sm px-3 py-2 text-sm bg-white" style={{ borderColor: LINE }}>{fundLocations.map((f) => <option key={f.id} value={f.id}>{f.name} â€” {fmtMoney(balances[f.id] || 0)}</option>)}</select></Field>
           <div className="flex justify-center"><ArrowLeftRight size={14} color={BRASS} /></div>
-          <Field label="To account"><select value={toId} onChange={(e) => setToId(e.target.value)} className="w-full border rounded-sm px-3 py-2 text-sm bg-white" style={{ borderColor: LINE }}>{fundLocations.map((f) => <option key={f.id} value={f.id}>{f.name} — {fmtMoney(balances[f.id] || 0)}</option>)}</select></Field>
+          <Field label="To account"><select value={toId} onChange={(e) => setToId(e.target.value)} className="w-full border rounded-sm px-3 py-2 text-sm bg-white" style={{ borderColor: LINE }}>{fundLocations.map((f) => <option key={f.id} value={f.id}>{f.name} â€” {fmtMoney(balances[f.id] || 0)}</option>)}</select></Field>
           <Field label="Amount"><input type="number" min="0" value={amount} onChange={(e) => setAmount(e.target.value)} placeholder="0" className="w-full border rounded-sm px-3 py-2 text-sm" style={{ borderColor: LINE, fontFamily: "ui-monospace, monospace" }} /></Field>
           {overBalance && <div className="text-[11px]" style={{ color: RUST }}>This exceeds the available balance in the source account.</div>}
           <Field label="Date"><input type="date" value={date} onChange={(e) => setDate(e.target.value)} className="w-full border rounded-sm px-3 py-2 text-sm" style={{ borderColor: LINE }} /></Field>
@@ -863,7 +922,7 @@ function Transactions({ filters, setFilters, showFilters, setShowFilters, active
       <div className="flex gap-2">
         <div className="flex-1 flex items-center border rounded-sm px-2 bg-white" style={{ borderColor: LINE }}>
           <Search size={14} color={SLATE} />
-          <input className="w-full px-2 py-2 text-sm outline-none bg-transparent" placeholder="Search payee or notes…" value={filters.search} onChange={(e) => setFilters((f) => ({ ...f, search: e.target.value }))} />
+          <input className="w-full px-2 py-2 text-sm outline-none bg-transparent" placeholder="Search payee or notesâ€¦" value={filters.search} onChange={(e) => setFilters((f) => ({ ...f, search: e.target.value }))} />
         </div>
         <button onClick={() => setShowFilters((v) => !v)} className="border rounded-sm px-3 flex items-center gap-1 text-xs bg-white" style={{ borderColor: LINE }}><Filter size={13} /> {activeFilterCount > 0 && <span style={{ color: BRASS }}>{activeFilterCount}</span>}</button>
       </div>
@@ -880,7 +939,7 @@ function Transactions({ filters, setFilters, showFilters, setShowFilters, active
           return (
             <div key={e.id} className="border rounded-sm p-3 bg-white" style={{ borderColor: LINE }}>
               <div className="flex justify-between items-start gap-2">
-                <div className="min-w-0"><div className="text-sm font-medium truncate">{e.payee}</div><div className="text-[11px]" style={{ color: SLATE }}>{e.department} · {e.category}</div></div>
+                <div className="min-w-0"><div className="text-sm font-medium truncate">{e.payee}</div><div className="text-[11px]" style={{ color: SLATE }}>{e.department} Â· {e.category}</div></div>
                 <div className="text-right shrink-0"><div className="text-sm font-semibold" style={{ fontFamily: "ui-monospace, monospace" }}>{fmtMoney(e.amount)}</div><div className="text-[10px]" style={{ color: SLATE }}>{e.date}</div></div>
               </div>
               <div className="flex items-center justify-between mt-2 flex-wrap gap-y-1.5">
@@ -971,9 +1030,9 @@ function EntryForm({ form, setForm, onCancel, onSubmit, fundLocations, balances,
             <Field label="Date"><input type="date" value={form.date} onChange={set("date")} className="w-full border rounded-sm px-3 py-2 text-sm" style={{ borderColor: LINE }} /></Field>
           </div>
           <Field label="Funding source">
-            {fundLocations.length === 0 ? <div className="text-xs px-3 py-2 border rounded-sm" style={{ borderColor: LINE, color: RUST }}>No accounts set up yet — add one under Funds first.</div> : (
+            {fundLocations.length === 0 ? <div className="text-xs px-3 py-2 border rounded-sm" style={{ borderColor: LINE, color: RUST }}>No accounts set up yet â€” add one under Funds first.</div> : (
               <>
-                <select value={form.fundLocationId} onChange={set("fundLocationId")} className="w-full border rounded-sm px-3 py-2 text-sm bg-white" style={{ borderColor: LINE }}>{fundLocations.map((f) => <option key={f.id} value={f.id}>{f.name} ({f.type}) — {fmtMoney(balances[f.id] || 0)}</option>)}</select>
+                <select value={form.fundLocationId} onChange={set("fundLocationId")} className="w-full border rounded-sm px-3 py-2 text-sm bg-white" style={{ borderColor: LINE }}>{fundLocations.map((f) => <option key={f.id} value={f.id}>{f.name} ({f.type}) â€” {fmtMoney(balances[f.id] || 0)}</option>)}</select>
                 {overBalance && <div className="text-[11px] mt-1" style={{ color: RUST }}>This exceeds the available balance in this account.</div>}
               </>
             )}
@@ -1014,3 +1073,4 @@ function ImportModal({ onClose, onFile }) {
     </div>
   );
 }
+
