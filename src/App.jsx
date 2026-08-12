@@ -56,11 +56,17 @@ async function callFn(action, payload, accessToken) {
   const functionNames = [...new Set([import.meta.env.VITE_SUPABASE_FUNCTION_NAME || "create-user", "dynamic-function"])];
   let lastError = null;
   for (const functionName of functionNames) {
-    const res = await fetch(`${functionsUrl}/${functionName}`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json", ...(accessToken ? { Authorization: `Bearer ${accessToken}` } : {}) },
-      body: JSON.stringify({ action, ...payload }),
-    });
+    let res;
+    try {
+      res = await fetch(`${functionsUrl}/${functionName}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...(accessToken ? { Authorization: `Bearer ${accessToken}` } : {}) },
+        body: JSON.stringify({ action, ...payload }),
+      });
+    } catch (error) {
+      if (functionName !== functionNames[functionNames.length - 1]) continue;
+      throw new Error(`Could not reach Supabase function "${functionName}": ${getErrorMessage(error, "Failed to fetch")}`);
+    }
     const raw = await res.text();
     let data = {};
     try { data = raw ? JSON.parse(raw) : {}; } catch { data = { error: raw }; }
